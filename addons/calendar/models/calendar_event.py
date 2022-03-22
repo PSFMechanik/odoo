@@ -13,7 +13,14 @@ from odoo import api, fields, models
 from odoo import tools
 from odoo.addons.base.models.res_partner import _tz_get
 from odoo.addons.calendar.models.calendar_attendee import Attendee
-from odoo.addons.calendar.models.calendar_recurrence import weekday_to_field, RRULE_TYPE_SELECTION, END_TYPE_SELECTION, MONTH_BY_SELECTION, WEEKDAY_SELECTION, BYDAY_SELECTION
+from odoo.addons.calendar.models.calendar_recurrence import (
+    weekday_to_field,
+    RRULE_TYPE_SELECTION,
+    END_TYPE_SELECTION,
+    MONTH_BY_SELECTION,
+    WEEKDAY_SELECTION,
+    BYDAY_SELECTION
+)
 from odoo.tools.translate import _
 from odoo.tools.misc import get_lang
 from odoo.tools import pycompat
@@ -25,6 +32,12 @@ SORT_ALIASES = {
     'start': 'sort_start',
     'start_date': 'sort_start',
 }
+
+def get_weekday_index(weekday):
+    """
+    Get the index of the weekday in the WEEKDAY_SELECTION list.
+    """
+    return next(i for i, (sname, _) in enumerate(WEEKDAY_SELECTION) if sname == weekday.upper())
 
 def get_weekday_occurence(date):
     """
@@ -640,6 +653,21 @@ class Meeting(models.Model):
         recurrences_to_unlink.with_context(archive_on_error=True).unlink()
         return detached_events - self
 
+    def get_base_event_shift(self, recurrence_values):
+        """
+        When a recurrence is updated from a daily type to a weekly type,
+        the base event may need to be shifted of some days to match days selected in
+        the week.
+        This method returns the number of days to shift the base event to match this new criteria.
+        """
+        self.ensure_one()
+        from_day_index = get_weekday_index(self.weekday)
+        weekdays = WEEKDAY_SELECTION[from_day_index + 1:] + WEEKDAY_SELECTION[:from_day_index + 1]
+        return next(
+            i + 1
+            for i, (sname, _) in enumerate(weekdays)
+            if recurrence_values.get(sname.lower())
+        )
 
     def _rewrite_recurrence(self, values, time_values, recurrence_values):
         """ Recreate the whole recurrence when all recurrent events must be moved
@@ -654,6 +682,7 @@ class Meeting(models.Model):
         update_dict = {}
         start_update = fields.Datetime.to_datetime(time_values.get('start'))
         stop_update = fields.Datetime.to_datetime(time_values.get('stop'))
+
         # Convert the base_event_id hours according to new values: time shift
         if start_update or stop_update:
             if start_update:
@@ -671,6 +700,21 @@ class Meeting(models.Model):
                 stop = base_time_values['stop'] + (stop_update - self.stop)
                 stop_date = base_time_values['stop'].date() + (stop_update.date() - self.stop.date())
                 update_dict.update({'stop': stop, 'stop_date': stop_date})
+        else:
+            # when the recurrence type changed from daily to weekly, the base event might not
+            # be on the same day, even if it's still at the same time => need to update it.
+            new_rrule_type = recurrence_values.get('rrule_type')
+            if new_rrule_type and new_rrule_type == 'weekly' and base_event.rrule_type != new_rrule_type:
+                if not recurrence_values.get(base_event.weekday.lower(), True):
+                    day_count = base_event.get_recurrence_update_shift(recurrence_values)
+                    update_dict = {
+                        'start': base_event.start + timedelta(days=day_count),
+                        'stop': base_event.stop + timedelta(days=day_count),
+                    }
+                    if base_event.start_date:
+                        update_dict.update({'start_date': base_event.start_date + timedelta(days=day_count)})
+                    if base_event.stop_date:
+                        update_dict.update({'stop_date': base_event.stop_date + timedelta(days=day_count)})
 
         time_values.update(update_dict)
         if time_values or recurrence_values:
@@ -730,12 +774,12 @@ class Meeting(models.Model):
                 # Update this event
                 detached_events |= self._break_recurrence(future=recurrence_update_setting == 'future_events')
             else:
-                future_update_start = self.start if recurrence_update_setting == 'future_events' else None
                 time_values = {field: values.pop(field) for field in time_fields if field in values}
                 if recurrence_update_setting == 'all_events':
                     # Update all events: we create a new reccurrence and dismiss the existing events
                     self._rewrite_recurrence(values, time_values, recurrence_values)
                 else:
+                    future_update_start = self.start if recurrence_update_setting == 'future_events' else None
                     # Update future events
                     detached_events |= self._split_recurrence(time_values)
                     self.recurrence_id._write_events(values, dtstart=future_update_start)
@@ -809,7 +853,6 @@ class Meeting(models.Model):
         # Add commands to create attendees from partners (if present) if no attendee command
         # is already given (coming from Google event for example).
         # Automatically add the current partner when creating an event if there is none (happens when we quickcreate an event)
-        default_partners_ids = defaults.get('partner_ids') or ([(4, self.env.user.partner_id.id)])
         vals_list = [
             dict(vals, attendee_ids=self._attendees_values(vals['partner_ids']))
             if 'partner_ids' in vals and not vals.get('attendee_ids')
