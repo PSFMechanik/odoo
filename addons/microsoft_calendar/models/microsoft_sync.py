@@ -208,14 +208,15 @@ class MicrosoftSync(models.AbstractModel):
         self.microsoft_id = False
         self.unlink()
 
-    def _sync_recurrence_microsoft2odoo(self, microsoft_events: MicrosoftEvent):
-        recurrent_masters = microsoft_events.filter(lambda e: e.is_recurrence())
-        recurrents = microsoft_events.filter(lambda e: e.is_recurrent_not_master())
+    def _sync_recurrence_microsoft2odoo(self, existing_events, new_events):
+        recurrent_masters = new_events.filter(lambda e: e.is_recurrence())
+        recurrents = new_events.filter(lambda e: e.is_recurrent_not_master())
         default_values = {'need_sync_m': False}
 
         new_recurrence = self.env['calendar.recurrence']
         updated_events = self.env['calendar.event']
 
+        # --- create new recurrences and associated events ---
         for recurrent_master in recurrent_masters:
             new_calendar_recurrence = dict(
                 self.env['calendar.recurrence']._microsoft_to_odoo_values(recurrent_master, default_values, with_ids=True),
@@ -245,14 +246,27 @@ class MicrosoftSync(models.AbstractModel):
             new_recurrence_odoo.base_event_id = new_recurrence_odoo.calendar_event_ids[0] if new_recurrence_odoo.calendar_event_ids else False
             new_recurrence |= new_recurrence_odoo
 
-        series_master_ids = [x.seriesMasterId for x in recurrents]
-        recurrences = self.env['calendar.recurrence'].search([('ms_organizer_event_id', 'in', series_master_ids)])
-        for recurrent_master_id in set([x.seriesMasterId for x in recurrents]):
-            recurrence_id = recurrences.filtered(lambda ev: ev.ms_organizer_event_id == recurrent_master_id)
+        # --- update events in existing recurrences ---
+        # Important note:
+        # To map existing recurrences with events to update, we must use the universal id
+        # (also known as ICalUId in the Microsoft API), as 'seriesMasterId' attribute of events
+        # is specific to the Microsoft user calendar.
+        ms_recurrence_ids = list({x.seriesMasterId for x in recurrents})
+        ms_recurrence_uids = {r.id: r.iCalUId for r in existing_events if r.id in ms_recurrence_ids}
+
+        recurrences = self.env['calendar.recurrence'].search([
+            ('ms_universal_event_id', 'in', ms_recurrence_uids.values())
+        ])
+        for recurrent_master_id in ms_recurrence_ids:
+            recurrence_id = recurrences.filtered(
+                lambda ev: ev.ms_universal_event_id == ms_recurrence_uids[recurrent_master_id]
+            )
             to_update = recurrents.filter(lambda e: e.seriesMasterId == recurrent_master_id)
             for recurrent_event in to_update:
                 if recurrent_event.type == 'occurrence':
-                    value = self.env['calendar.event']._microsoft_to_odoo_recurrence_values(recurrent_event, {'need_sync_m': False})
+                    value = self.env['calendar.event']._microsoft_to_odoo_recurrence_values(
+                        recurrent_event, {'need_sync_m': False}
+                    )
                 else:
                     value = self.env['calendar.event']._microsoft_to_odoo_values(recurrent_event, default_values)
                 existing_event = recurrence_id.calendar_event_ids.filtered(
@@ -324,7 +338,7 @@ class MicrosoftSync(models.AbstractModel):
             for e in (new - new_recurrence)
         ]
         synced_events = self.with_context(dont_notify=True)._create_from_microsoft(new, odoo_values)
-        synced_recurrences, updated_events = self._sync_recurrence_microsoft2odoo(new_recurrence)
+        synced_recurrences, updated_events = self._sync_recurrence_microsoft2odoo(existing, new_recurrence)
         synced_events |= updated_events
 
         # remove cancelled events and recurrences
@@ -430,6 +444,7 @@ class MicrosoftSync(models.AbstractModel):
                     'microsoft_id': combine_ids(event_id, uid),
                     'need_sync_m': False,
                 })
+                # TODO BAR: set serie master id in recurrent events!
 
     def _microsoft_attendee_answer(self, answer, params, timeout=TIMEOUT):
         if not answer:
