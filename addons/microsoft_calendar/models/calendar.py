@@ -131,7 +131,7 @@ class Meeting(models.Model):
 
 
     @api.model
-    def _microsoft_to_odoo_values(self, microsoft_event, default_values=None, with_ids=False):
+    def _microsoft_to_odoo_values(self, microsoft_event, default_reminders=(), default_values=None, with_ids=False):
         if microsoft_event.is_cancelled():
             return {'active': False}
 
@@ -149,7 +149,7 @@ class Meeting(models.Model):
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None) - relativedelta(days=1)
         else:
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None)
-        values = default_values if default_values else {}
+        values = default_values or {}
         values.update({
             'name': microsoft_event.subject or _("(No title)"),
             'description': microsoft_event.body and microsoft_event.body['content'],
@@ -193,7 +193,7 @@ class Meeting(models.Model):
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None) - relativedelta(days=1)
         else:
             stop = parse(microsoft_event.end.get('dateTime')).astimezone(timeZone_stop).replace(tzinfo=None)
-        values = default_values if default_values else {}
+        values = default_values or {}
         values.update({
             'microsoft_id': combine_ids(microsoft_event.id, microsoft_event.iCalUId),
             'microsoft_recurrence_master_id': microsoft_event.seriesMasterId,
@@ -216,7 +216,7 @@ class Meeting(models.Model):
         existing_attendees = self.env['calendar.attendee']
         if microsoft_event.match_with_odoo_events(self.env):
             existing_attendees = self.env['calendar.attendee'].search([
-                ('event_id', '=', microsoft_event.odoo_id),
+                ('event_id', '=', microsoft_event.odoo_id(self.env)),
                 ('email', 'in', emails)])
         elif self.env.user.partner_id.email not in emails:
             commands_attendee += [(0, 0, {'state': 'accepted', 'partner_id': self.env.user.partner_id.id})]
@@ -246,7 +246,7 @@ class Meeting(models.Model):
     def _odoo_reminders_commands_m(self, microsoft_event):
         reminders_commands = []
         if microsoft_event.isReminderOn:
-            event_id = self.browse(microsoft_event.odoo_id)
+            event_id = self.browse(microsoft_event.odoo_id(self.env))
             alarm_type_label = _("Notification")
 
             minutes = microsoft_event.reminderMinutesBeforeStart or 0
@@ -292,7 +292,7 @@ class Meeting(models.Model):
                 reminders_commands += [(3, a.id) for a in alarm_to_rm]
 
         else:
-            event_id = self.browse(microsoft_event.odoo_id)
+            event_id = self.browse(microsoft_event.odoo_id(self.env))
             alarm_to_rm = event_id.alarm_ids.filtered(lambda a: a.alarm_type == 'notification')
             if alarm_to_rm:
                 reminders_commands = [(3, a.id) for a in alarm_to_rm]
@@ -465,9 +465,12 @@ class Meeting(models.Model):
         return values
 
     def _cancel_microsoft(self):
-        # only owner can delete => others refuse the event
+        """
+        Cancel an Microsoft event.
+        There are 2 cases:
+          1) the organizer is an Odoo user: he's the only one able to delete the Odoo event. Attendees can just decline.
+          2) the organizer is NOT an Odoo user: any attendee should remove the Odoo event.
+        """
         user = self.env.user
-        my_cancelled_records = self.filtered(lambda e: e.user_id == user)
-        super(Meeting, my_cancelled_records)._cancel_microsoft()
-        attendees = (self - my_cancelled_records).attendee_ids.filtered(lambda a: a.partner_id == user.partner_id)
-        attendees.do_decline()
+        records = self.filtered(lambda e: not e.user_id or e.user_id == user)
+        super(Meeting, records)._cancel_microsoft()

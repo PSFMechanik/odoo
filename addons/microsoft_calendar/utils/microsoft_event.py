@@ -57,6 +57,9 @@ class MicrosoftEvent(abc.Set):
         """
         return tuple(e.id for e in self)
 
+    def microsoft_ids(self):
+        return tuple(e.id for e in self)
+
     @property
     def uids(self):
         """
@@ -64,9 +67,14 @@ class MicrosoftEvent(abc.Set):
         """
         return tuple(e.iCalUId for e in self)
 
-    @property
-    def odoo_id(self):
+    def odoo_id(self, env):
         return self._odoo_id
+
+    def _meta_odoo_id(self, microsoft_guid):
+        """Returns the Odoo id stored in the Microsoft Event metadata.
+        This id might not actually exists in the database.
+        """
+        return None
 
     @property
     def odoo_ids(self):

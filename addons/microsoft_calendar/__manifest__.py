@@ -6,7 +6,7 @@
     'version': '1.0',
     'category': 'Productivity',
     'description': "",
-    'depends': ['microsoft_account', 'calendar', 'microsoft_calendar_update'],
+    'depends': ['microsoft_account', 'calendar'],
     'qweb': ['static/src/xml/*.xml'],
     'data': [
         'data/microsoft_calendar_data.xml',

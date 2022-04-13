@@ -33,12 +33,6 @@ SORT_ALIASES = {
     'start_date': 'sort_start',
 }
 
-def get_weekday_index(weekday):
-    """
-    Get the index of the weekday in the WEEKDAY_SELECTION list.
-    """
-    return next(i for i, (sname, _) in enumerate(WEEKDAY_SELECTION) if sname == weekday.upper())
-
 def get_weekday_occurence(date):
     """
     :returns: ocurrence
@@ -628,7 +622,7 @@ class Meeting(models.Model):
             # When we try to change recurrence values of an event not following the recurrence, we get the parameters from
             # the base_event
             previous_week_day_field = weekday_to_field(self.recurrence_id.base_event_id._get_start_date().weekday())
-        self.write({**time_values})
+        self.write(time_values)
         return self._apply_recurrence_values({
             previous_week_day_field: False,
             **self._get_recurrence_params(),
@@ -653,98 +647,6 @@ class Meeting(models.Model):
         recurrences_to_unlink.with_context(archive_on_error=True).unlink()
         return detached_events - self
 
-    def get_base_event_shift(self, recurrence_values):
-        """
-        When a recurrence is updated from a daily type to a weekly type,
-        the base event may need to be shifted of some days to match days selected in
-        the week.
-        This method returns the number of days to shift the base event to match this new criteria.
-        """
-        self.ensure_one()
-        from_day_index = get_weekday_index(self.weekday)
-        weekdays = WEEKDAY_SELECTION[from_day_index + 1:] + WEEKDAY_SELECTION[:from_day_index + 1]
-        return next(
-            i + 1
-            for i, (sname, _) in enumerate(weekdays)
-            if recurrence_values.get(sname.lower())
-        )
-
-    def _rewrite_recurrence(self, values, time_values, recurrence_values):
-        """ Recreate the whole recurrence when all recurrent events must be moved
-        time_values corresponds to date times for one specific event. We need to update the base_event of the recurrence
-        and reapply the recurrence later. All exceptions are lost.
-        """
-        self.ensure_one()
-        base_event = self.recurrence_id.base_event_id
-        if not base_event:
-            raise UserError(_("You can't update a recurrence without base event."))
-        [base_time_values] = self.recurrence_id.base_event_id.read(['start', 'stop', 'allday'])
-        update_dict = {}
-        start_update = fields.Datetime.to_datetime(time_values.get('start'))
-        stop_update = fields.Datetime.to_datetime(time_values.get('stop'))
-
-        # Convert the base_event_id hours according to new values: time shift
-        if start_update or stop_update:
-            if start_update:
-                start = base_time_values['start'] + (start_update - self.start)
-                stop = base_time_values['stop'] + (start_update - self.start)
-                start_date = base_time_values['start'].date() + (start_update.date() - self.start.date())
-                stop_date = base_time_values['stop'].date() + (start_update.date() - self.start.date())
-                update_dict.update({'start': start, 'start_date': start_date, 'stop': stop, 'stop_date': stop_date})
-            if stop_update:
-                if not start_update:
-                    # Apply the same shift for start
-                    start = base_time_values['start'] + (stop_update - self.stop)
-                    start_date = base_time_values['start_date'] + (stop_update.date() - self.stop.date())
-                    update_dict.update({'start': start, 'start_date': start_date})
-                stop = base_time_values['stop'] + (stop_update - self.stop)
-                stop_date = base_time_values['stop'].date() + (stop_update.date() - self.stop.date())
-                update_dict.update({'stop': stop, 'stop_date': stop_date})
-        else:
-            # when the recurrence type changed from daily to weekly, the base event might not
-            # be on the same day, even if it's still at the same time => need to update it.
-            new_rrule_type = recurrence_values.get('rrule_type')
-            if new_rrule_type and new_rrule_type == 'weekly' and base_event.rrule_type != new_rrule_type:
-                if not recurrence_values.get(base_event.weekday.lower(), True):
-                    day_count = base_event.get_recurrence_update_shift(recurrence_values)
-                    update_dict = {
-                        'start': base_event.start + timedelta(days=day_count),
-                        'stop': base_event.stop + timedelta(days=day_count),
-                    }
-                    if base_event.start_date:
-                        update_dict.update({'start_date': base_event.start_date + timedelta(days=day_count)})
-                    if base_event.stop_date:
-                        update_dict.update({'stop_date': base_event.stop_date + timedelta(days=day_count)})
-
-        time_values.update(update_dict)
-        if time_values or recurrence_values:
-            rec_fields = list(self._get_recurrent_fields())
-            [rec_vals] = base_event.read(rec_fields)
-            old_recurrence_values = {field: rec_vals.pop(field) for field in rec_fields if
-                                     field in rec_vals}
-            base_event.write({**values, **time_values})
-            # Delete all events except the base event and the currently modified
-            expandable_events = self.recurrence_id.calendar_event_ids - (self.recurrence_id.base_event_id + self)
-            self.recurrence_id.with_context(archive_on_error=True).unlink()
-            expandable_events.with_context(archive_on_error=True).unlink()
-            # Make sure to recreate a new recurrence. Needed to prevent sync issues
-            base_event.recurrence_id = False
-            # Recreate all events and the recurrence: override updated values
-            new_values = {
-                **old_recurrence_values,
-                **base_event._get_recurrence_params(),
-                **recurrence_values,
-            }
-            new_values.pop('rrule')
-            detached_events = base_event._apply_recurrence_values(new_values)
-            detached_events.write({'active': False})
-            # archive the current event if all the events were recreated
-            if self != self.recurrence_id.base_event_id and time_values:
-                self.active = False
-        else:
-            # Write on all events. Carefull, it could trigger a lot of noise to Google/Microsoft...
-            self.recurrence_id._write_events(values)
-
     def write(self, values):
         detached_events = self.env['calendar.event']
         recurrence_update_setting = values.pop('recurrence_update', None)
@@ -758,7 +660,7 @@ class Meeting(models.Model):
             update_alarms = True
 
         time_fields = self.env['calendar.event']._get_time_fields()
-        if any([values.get(key) for key in time_fields]) or 'alarm_ids' in values:
+        if any(values.get(key) for key in time_fields) or 'alarm_ids' in values:
             update_alarms = True
             update_time = True
 
@@ -774,15 +676,12 @@ class Meeting(models.Model):
                 # Update this event
                 detached_events |= self._break_recurrence(future=recurrence_update_setting == 'future_events')
             else:
+                update_start = self.start if recurrence_update_setting == 'future_events' else None
                 time_values = {field: values.pop(field) for field in time_fields if field in values}
-                if recurrence_update_setting == 'all_events':
-                    # Update all events: we create a new reccurrence and dismiss the existing events
-                    self._rewrite_recurrence(values, time_values, recurrence_values)
-                else:
-                    future_update_start = self.start if recurrence_update_setting == 'future_events' else None
-                    # Update future events
-                    detached_events |= self._split_recurrence(time_values)
-                    self.recurrence_id._write_events(values, dtstart=future_update_start)
+                if not update_start and (time_values or recurrence_values):
+                    raise UserError(_("Updating All Events is not allowed when dates or time is modified. You can only update one particular event and following events."))
+                detached_events |= self._split_recurrence(time_values)
+                self.recurrence_id._write_events(values, dtstart=update_start)
         else:
             super().write(values)
             self._sync_activities(fields=values.keys())
@@ -826,7 +725,7 @@ class Meeting(models.Model):
         defaults = self.default_get(['activity_ids', 'res_model_id', 'res_id', 'user_id', 'res_model', 'partner_ids'])
         meeting_activity_type = self.env['mail.activity.type'].search([('category', '=', 'meeting')], limit=1)
         # get list of models ids and filter out None values directly
-        model_ids = list(filter(bool, {values.get('res_model_id', defaults.get('res_model_id')) for values in vals_list}))
+        model_ids = list(filter(None, {values.get('res_model_id', defaults.get('res_model_id')) for values in vals_list}))
         model_name = defaults.get('res_model')
         valid_activity_model_ids = model_name and self.env[model_name].sudo().browse(model_ids).filtered(lambda m: 'activity_ids' in m).ids or []
         if meeting_activity_type and not defaults.get('activity_ids'):

@@ -126,7 +126,7 @@ class MicrosoftSync(models.AbstractModel):
 
     def _search_event_id(self, operator, value, with_uid):
         def _domain(v):
-            return ('microsoft_id', '=like', f'%{IDS_SEPARATOR}{v}' if with_uid else f'{v}{IDS_SEPARATOR}%')
+            return ('microsoft_id', '=like', f'%{IDS_SEPARATOR}{v}' if with_uid else f'{v}%')
 
         if operator == '=' and not value:
             return (
@@ -208,9 +208,9 @@ class MicrosoftSync(models.AbstractModel):
         self.microsoft_id = False
         self.unlink()
 
-    def _sync_recurrence_microsoft2odoo(self, existing_events, new_events):
-        recurrent_masters = new_events.filter(lambda e: e.is_recurrence())
-        recurrents = new_events.filter(lambda e: e.is_recurrent_not_master())
+    def _sync_recurrence_microsoft2odoo(self, microsoft_events, new_events=None):
+        recurrent_masters = new_events.filter(lambda e: e.is_recurrence()) if new_events else []
+        recurrents = new_events.filter(lambda e: e.is_recurrent_not_master()) if new_events else []
         default_values = {'need_sync_m': False}
 
         new_recurrence = self.env['calendar.recurrence']
@@ -252,7 +252,7 @@ class MicrosoftSync(models.AbstractModel):
         # (also known as ICalUId in the Microsoft API), as 'seriesMasterId' attribute of events
         # is specific to the Microsoft user calendar.
         ms_recurrence_ids = list({x.seriesMasterId for x in recurrents})
-        ms_recurrence_uids = {r.id: r.iCalUId for r in existing_events if r.id in ms_recurrence_ids}
+        ms_recurrence_uids = {r.id: r.iCalUId for r in microsoft_events if r.id in ms_recurrence_ids}
 
         recurrences = self.env['calendar.recurrence'].search([
             ('ms_universal_event_id', 'in', ms_recurrence_uids.values())
@@ -308,7 +308,7 @@ class MicrosoftSync(models.AbstractModel):
                         event_values, need_sync_m=False
                     )
 
-                odoo_event = self.env['calendar.event'].browse(e.odoo_id).exists().with_context(
+                odoo_event = self.env['calendar.event'].browse(e.odoo_id(self.env)).exists().with_context(
                     no_mail_to_attendees=True, mail_create_nolog=True
                 )
                 odoo_event.write(dict(event_values, need_sync_m=False))
@@ -348,7 +348,7 @@ class MicrosoftSync(models.AbstractModel):
             ('ms_organizer_event_id', 'in', cancelled.ids),
         ])
         cancelled_events = self.browse([
-            e.odoo_id
+            e.odoo_id(self.env)
             for e in cancelled
             if e.id not in [r.ms_organizer_event_id for r in cancelled_recurrences]
         ])
@@ -368,9 +368,9 @@ class MicrosoftSync(models.AbstractModel):
             # know if the current one has changed since the last sync ? In this case, no need to pray
             # that both servers have exactly the same time :P
             if mevent.is_recurrence():
-                odoo_event = self.env['calendar.recurrence'].browse(mevent.odoo_id).exists()
+                odoo_event = self.env['calendar.recurrence'].browse(mevent.odoo_id(self.env)).exists()
             else:
-                odoo_event = self.browse(mevent.odoo_id).exists()
+                odoo_event = self.browse(mevent.odoo_id(self.env)).exists()
 
             if odoo_event:
                 odoo_event_updated_time = pytz.utc.localize(odoo_event.write_date)
@@ -478,7 +478,9 @@ class MicrosoftSync(models.AbstractModel):
         return self.with_context(active_test=False).search(domain)
 
     @api.model
-    def _microsoft_to_odoo_values(self, microsoft_event: MicrosoftEvent, with_ids=False):
+    def _microsoft_to_odoo_values(
+        self, microsoft_event: MicrosoftEvent, default_reminders=(), default_values=None, with_ids=False
+    ):
         """
         Implements this method to return a dict of Odoo values corresponding
         to the Microsoft event given as parameter

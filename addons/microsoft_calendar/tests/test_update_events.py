@@ -512,56 +512,15 @@ class TestUpdateEvents(TestCommon):
 
         # arrange
         new_date = datetime(2021, 9, 25, 10, 0, 0)
-        existing_recurrences = self.env["calendar.recurrence"].search([])
-        expected_deleted_event_ids = [
-            r.ms_organizer_event_id
-            for i, r in enumerate(self.recurrent_events)
-            if i in range(1, self.recurrent_events_count)
-        ]
 
         # act
-        res = self.recurrent_events[0].with_user(self.organizer_user).write({
-            "recurrence_update": "all_events",
-            "start": new_date.strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        self.call_post_commit_hooks()
-        self.recurrent_events.invalidate_cache()
-
-        # assert
-        new_recurrences = self.env["calendar.recurrence"].search([]) - existing_recurrences
-
-        self.assertTrue(res)
-
-        self.assertEqual(len(new_recurrences), 1)
-        self.assertEqual(new_recurrences.base_event_id.start, new_date)
-        self.assertEqual(len(new_recurrences.calendar_event_ids), self.recurrent_events_count)
-
-        mock_patch.assert_called_once_with(
-            self.recurrent_events[0].ms_organizer_event_id,
-            {
-                'seriesMasterId': 'REC123',
-                'type': 'exception',
-                'start': {
-                    'dateTime': pytz.utc.localize(new_date).isoformat(),
-                    'timeZone': 'Europe/London'
-                },
-                'end': {
-                    'dateTime': pytz.utc.localize(new_date + timedelta(hours=1)).isoformat(),
-                    'timeZone': 'Europe/London'
-                },
-                'isAllDay': False
-            },
-            token=mock_get_token(self.organizer_user),
-            timeout=ANY,
-        )
-
-        # events (except the base one) of the old recurrence should have been removed
-        for e_id in expected_deleted_event_ids:
-            mock_delete.assert_any_call(
-                e_id,
-                token=mock_get_token(self.organizer_user),
-                timeout=ANY,
-            )
+        with self.assertRaises(UserError):
+            self.recurrent_events[0].with_user(self.organizer_user).write({
+                "recurrence_update": "all_events",
+                "start": new_date.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            self.call_post_commit_hooks()
+            self.recurrent_events.invalidate_cache()
 
     @patch.object(MicrosoftCalendarService, 'delete')
     @patch.object(MicrosoftCalendarService, 'insert')
@@ -570,61 +529,20 @@ class TestUpdateEvents(TestCommon):
         self, mock_patch, mock_insert, mock_delete
     ):
         """
-        Update all events start date from a recurrence from the attendee calendar.
+        Update all events start date from a recurrence from the attendee calendar should raise an error.
         """
 
         # arrange
         new_date = datetime(2021, 9, 25, 10, 0, 0)
-        existing_recurrences = self.env["calendar.recurrence"].search([])
-        expected_deleted_event_ids = [
-            r.ms_organizer_event_id
-            for i, r in enumerate(self.recurrent_events)
-            if i in range(1, self.recurrent_events_count)
-        ]
 
         # act
-        res = self.recurrent_events[0].with_user(self.attendee_user).write({
-            "recurrence_update": "all_events",
-            "start": new_date.strftime("%Y-%m-%d %H:%M:%S"),
-        })
-        self.call_post_commit_hooks()
-        self.recurrent_events.invalidate_cache()
-
-        # assert
-        new_recurrences = self.env["calendar.recurrence"].search([]) - existing_recurrences
-
-        self.assertTrue(res)
-
-        self.assertEqual(len(new_recurrences), 1)
-        self.assertEqual(new_recurrences.base_event_id.start, new_date)
-        self.assertEqual(len(new_recurrences.calendar_event_ids), self.recurrent_events_count)
-
-        mock_patch.assert_called_once_with(
-            self.recurrent_events[0].ms_organizer_event_id,
-            {
-                'seriesMasterId': 'REC123',
-                'type': 'exception',
-                'start': {
-                    'dateTime': pytz.utc.localize(new_date).isoformat(),
-                    'timeZone': 'Europe/London'
-                },
-                'end': {
-                    'dateTime': pytz.utc.localize(new_date + timedelta(hours=1)).isoformat(),
-                    'timeZone': 'Europe/London'
-                },
-                'isAllDay': False
-            },
-            token=mock_get_token(self.organizer_user),
-            timeout=ANY,
-        )
-
-        # events (except the base one) of the old recurrence should have been removed
-        for e_id in expected_deleted_event_ids:
-            mock_delete.assert_any_call(
-                e_id,
-                token=mock_get_token(self.organizer_user),
-                timeout=ANY,
-            )
+        with self.assertRaises(UserError):
+            self.recurrent_events[0].with_user(self.attendee_user).write({
+                "recurrence_update": "all_events",
+                "start": new_date.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            self.call_post_commit_hooks()
+            self.recurrent_events.invalidate_cache()
 
     # -------------------------------------------------------------------------------
     # Update from Outlook to Odoo

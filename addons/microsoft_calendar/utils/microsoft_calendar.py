@@ -136,7 +136,7 @@ class MicrosoftCalendarService():
     def insert(self, values, token=None, timeout=TIMEOUT):
         url = "/v1.0/me/calendar/events"
         headers = {'Content-type': 'application/json', 'Authorization': 'Bearer %s' % token}
-        dummy, data, dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='POST', timeout=timeout)
+        _dummy, data, _dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='POST', timeout=timeout)
 
         return data['id'], data['iCalUId']
 
@@ -145,7 +145,7 @@ class MicrosoftCalendarService():
         url = "/v1.0/me/calendar/events/%s" % event_id
         headers = {'Content-type': 'application/json', 'Authorization': 'Bearer %s' % token}
         try:
-            status, dummy, dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='PATCH', timeout=timeout)
+            status, _dummy, _dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='PATCH', timeout=timeout)
         except requests.HTTPError:
             _logger.info("Microsoft event %s has not been updated", event_id)
             return False
@@ -158,11 +158,11 @@ class MicrosoftCalendarService():
         headers = {'Authorization': 'Bearer %s' % token}
         params = {}
         try:
-            status, dummy, dummy = self.microsoft_service._do_request(url, params, headers=headers, method='DELETE', timeout=timeout)
+            status, _dummy, _dummy = self.microsoft_service._do_request(url, params, headers=headers, method='DELETE', timeout=timeout)
         except requests.HTTPError as e:
             # For some unknown reason Microsoft can also return a 403 response when the event is already cancelled.
-            if e.response.status_code in (410, 403):
-                status = e.response.status_code
+            status = e.response.status_code
+            if status in (410, 403):
                 _logger.info("Microsoft event %s was already deleted", event_id)
             else:
                 raise e
@@ -173,7 +173,7 @@ class MicrosoftCalendarService():
     def answer(self, event_id, answer, values, token=None, timeout=TIMEOUT):
         url = "/v1.0/me/calendar/events/%s/%s" % (event_id, answer)
         headers = {'Content-type': 'application/json', 'Authorization': 'Bearer %s' % token}
-        status, dummy, dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='POST', timeout=timeout)
+        status, _dummy, _dummy = self.microsoft_service._do_request(url, json.dumps(values), headers, method='POST', timeout=timeout)
 
         return status not in RESOURCE_NOT_FOUND_STATUSES
 
